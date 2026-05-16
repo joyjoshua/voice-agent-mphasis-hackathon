@@ -1,0 +1,40 @@
+.voice-button-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+
+.voice-button {
+  font: inherit;
+  padding: 0.55rem 1rem;
+  border-radius: 8px;
+  border: 1px solid #2d3748;
+  background: #1a202c;
+  color: #f7fafc;
+  cursor: pointer;
+}
+
+.voice-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.voice-button.voice-button--live {
+  background: #c53030;
+  border-color: #9b2c2c;
+}
+
+.voice-button-status {
+  margin: 0;
+  font-size: 0.875rem;
+  color: #4a5568;
+}
+
+.voice-button-status.voice-button-status--warn {
+  color: #c05621;
+}
+
+.voice-button-status.voice-button-status--error {
+  color: #c53030;
+}
