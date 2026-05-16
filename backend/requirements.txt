@@ -1,0 +1,5 @@
+fastapi
+uvicorn[standard]
+pipecat-ai[sarvam]
+python-dotenv
+httpx
