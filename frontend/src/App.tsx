@@ -6,27 +6,40 @@ import './App.css'
 
 function App() {
   const [turns, setTurns] = useState<TranscriptTurn[]>([])
-  const pendingTranscript = useRef('')
+  const [voiceProcessing, setVoiceProcessing] = useState(false)
+  const [pendingUserLine, setPendingUserLine] = useState('')
+  const pendingUserRef = useRef('')
 
   const onVoiceMessage = useCallback((msg: VoiceServerMessage) => {
+    if (msg.type === 'processing') {
+      setVoiceProcessing(msg.active)
+      return
+    }
     if (msg.type === 'transcript') {
-      pendingTranscript.current = msg.text
+      pendingUserRef.current = msg.text
+      setPendingUserLine(msg.text)
       return
     }
     if (msg.type === 'response') {
+      const userLine = msg.user_transcript ?? pendingUserRef.current
       setTurns((prev) => [
         ...prev,
-        { user: pendingTranscript.current, ai: msg.text },
+        { user: userLine, ai: msg.text },
       ])
-      pendingTranscript.current = ''
+      pendingUserRef.current = ''
+      setPendingUserLine('')
+      setVoiceProcessing(false)
       return
     }
     if (msg.type === 'error') {
+      const userLine = msg.user_transcript ?? pendingUserRef.current
       setTurns((prev) => [
         ...prev,
-        { user: pendingTranscript.current, ai: msg.text },
+        { user: userLine, ai: msg.text },
       ])
-      pendingTranscript.current = ''
+      pendingUserRef.current = ''
+      setPendingUserLine('')
+      setVoiceProcessing(false)
     }
   }, [])
 
@@ -44,7 +57,11 @@ function App() {
           <VoiceButton onMessage={onVoiceMessage} />
         </div>
         <div className="app-panel app-panel--transcript">
-          <TranscriptFeed turns={turns} />
+          <TranscriptFeed
+            turns={turns}
+            pendingUserText={pendingUserLine}
+            assistantWorking={voiceProcessing}
+          />
         </div>
         <div className="app-panel app-panel--dashboard">
           <Dashboard />

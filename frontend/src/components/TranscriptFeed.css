@@ -80,3 +80,26 @@
   width: 100%;
   overflow: hidden;
 }
+
+.transcript-turn--pending {
+  border-left-color: #94a3b8;
+}
+
+.transcript-turn-text--pending {
+  color: #64748b;
+}
+
+.transcript-thinking {
+  display: inline-block;
+  animation: transcript-thinking-pulse 1s ease-in-out infinite;
+}
+
+@keyframes transcript-thinking-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}

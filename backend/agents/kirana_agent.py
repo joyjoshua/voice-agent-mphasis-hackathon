@@ -153,10 +153,13 @@ async def _post_paytm(messages: list[dict[str, Any]]) -> str | None:
         "temperature": float(os.getenv("PAYTM_TEMPERATURE", "0.2")),
     }
     timeout = float(os.getenv("PAYTM_TIMEOUT_SEC", "30"))
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(url, headers=headers, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+    except (httpx.HTTPError, ValueError):
+        return None
     return _extract_completion_text(data)
 
 
@@ -304,7 +307,7 @@ async def route_and_respond(
     matched = parsed.get("matched_items") or []
 
     def log_and_reply(reply: str, detected: str | None = None) -> str:
-        tag = detected if detected is not None else _csv_detect(intent)
+        tag = detected if detected is not None else _csv_detected(intent)
         log_turn(
             user_transcript=transcript.strip(),
             ai_response=reply,
@@ -338,7 +341,7 @@ async def route_and_respond(
             return log_and_reply(CANNED_OFF_TOPIC, "off_topic")
     except ValueError as exc:
         err = (SALE_FAILED_PREFIX + " " + str(exc)).strip()
-        return log_and_reply(err, _csv_detect(intent))
+        return log_and_reply(err, _csv_detected(intent))
 
     llm_txt = await get_llm_response(
         transcript=transcript.strip(),

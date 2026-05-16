@@ -21,6 +21,9 @@ type DashboardPayload = {
 }
 
 function apiUrl(path: string): string {
+  if (import.meta.env.DEV) {
+    return path
+  }
   const raw = import.meta.env.VITE_BACKEND_URL ?? ''
   const normalized = raw.startsWith('http') ? raw : `http://${raw}`
   try {

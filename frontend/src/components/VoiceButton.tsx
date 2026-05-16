@@ -4,16 +4,21 @@ import './VoiceButton.css'
 /** Matches backend `voice/pipeline.py` Sarvam bulbul:v3 output (`linear16`). */
 const PLAYBACK_SAMPLE_RATE_HZ = 24000
 
-export type VoiceServerMessage = {
-  type: 'transcript' | 'response' | 'error'
-  text: string
-}
+export type VoiceServerMessage =
+  | { type: 'transcript'; text: string }
+  | { type: 'response'; text: string; user_transcript?: string }
+  | { type: 'error'; text: string; user_transcript?: string }
+  | { type: 'processing'; active: boolean }
 
 export type VoiceButtonProps = {
   onMessage: (msg: VoiceServerMessage) => void
 }
 
 function voiceWebSocketUrl(): string {
+  if (import.meta.env.DEV && typeof window !== 'undefined') {
+    const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    return `${scheme}//${window.location.host}/ws/voice`
+  }
   const raw = import.meta.env.VITE_BACKEND_URL ?? ''
   const normalized = raw.startsWith('http') ? raw : `http://${raw}`
   let hostPath: string
@@ -116,21 +121,40 @@ export function VoiceButton({ onMessage }: VoiceButtonProps) {
         if (typeof ev.data === 'string') {
           try {
             const parsed: unknown = JSON.parse(ev.data)
-            if (
-              parsed &&
-              typeof parsed === 'object' &&
-              'type' in parsed &&
-              'text' in parsed &&
-              typeof (parsed as VoiceServerMessage).type === 'string' &&
-              typeof (parsed as VoiceServerMessage).text === 'string'
-            ) {
-              const msg = parsed as VoiceServerMessage
-              if (
-                msg.type === 'transcript' ||
-                msg.type === 'response' ||
-                msg.type === 'error'
-              ) {
-                onMessage(msg)
+            if (parsed && typeof parsed === 'object' && 'type' in parsed) {
+              const t = (parsed as { type: unknown }).type
+              if (t === 'processing' && 'active' in parsed) {
+                const active = (parsed as { active: unknown }).active
+                if (typeof active === 'boolean') {
+                  onMessage({ type: 'processing', active })
+                }
+              } else if (t === 'transcript' && 'text' in parsed) {
+                const tx = (parsed as { text: unknown }).text
+                if (typeof tx === 'string') {
+                  onMessage({ type: 'transcript', text: tx })
+                }
+              } else if (t === 'response' && 'text' in parsed) {
+                const tx = (parsed as { text: unknown }).text
+                if (typeof tx === 'string') {
+                  const ut = (parsed as { user_transcript?: unknown }).user_transcript
+                  onMessage({
+                    type: 'response',
+                    text: tx,
+                    user_transcript:
+                      typeof ut === 'string' ? ut : undefined,
+                  })
+                }
+              } else if (t === 'error' && 'text' in parsed) {
+                const tx = (parsed as { text: unknown }).text
+                if (typeof tx === 'string') {
+                  const ut = (parsed as { user_transcript?: unknown }).user_transcript
+                  onMessage({
+                    type: 'error',
+                    text: tx,
+                    user_transcript:
+                      typeof ut === 'string' ? ut : undefined,
+                  })
+                }
               }
             }
           } catch {

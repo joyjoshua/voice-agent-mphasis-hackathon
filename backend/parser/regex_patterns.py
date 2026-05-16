@@ -14,17 +14,45 @@ _QUANT_BODY = (
 
 QUANTITY_PATTERN = re.compile(_QUANT_BODY, re.IGNORECASE)
 
+# Spoken quantities (STT often returns "two" instead of "2")
+_SPOKEN_AMOUNT_WORDS: tuple[tuple[str, int], ...] = tuple(
+    sorted(
+        [
+            ("twenty", 20),
+            ("nineteen", 19),
+            ("eighteen", 18),
+            ("seventeen", 17),
+            ("sixteen", 16),
+            ("fifteen", 15),
+            ("fourteen", 14),
+            ("thirteen", 13),
+            ("twelve", 12),
+            ("eleven", 11),
+            ("ten", 10),
+            ("nine", 9),
+            ("eight", 8),
+            ("seven", 7),
+            ("six", 6),
+            ("five", 5),
+            ("four", 4),
+            ("three", 3),
+            ("two", 2),
+            ("one", 1),
+        ],
+        key=lambda x: len(x[0]),
+        reverse=True,
+    )
+)
+_SPOKEN_QUANT_PATTERN = re.compile(
+    r"\b(" + "|".join(re.escape(w) for w, _ in _SPOKEN_AMOUNT_WORDS) + r")\b",
+    re.IGNORECASE,
+)
+_WORD_TO_AMOUNT = dict(_SPOKEN_AMOUNT_WORDS)
+
 
 def _intent_order() -> tuple[tuple[str, re.Pattern[str]], ...]:
-    """Transactional intents run before greetings (see roadmap Phase 4 table + smoke flows)."""
+    """Inventory queries first, then earnings/stats (before `sales` verb → fixes `how much sales`)."""
     return (
-        (
-            "record_sale",
-            re.compile(
-                r"\b(?:sold|sell|sells|selling|sale|sales|becha|diya)\b",
-                re.I,
-            ),
-        ),
         (
             "check_inventory",
             re.compile(
@@ -58,6 +86,14 @@ def _intent_order() -> tuple[tuple[str, re.Pattern[str]], ...]:
             ),
         ),
         (
+            "record_sale",
+            re.compile(
+                # "i so" is common STT misread for "I sold"
+                r"\b(?:sold|sell|sells|selling|sale|sales|becha|diya|i\s+so)\b",
+                re.I,
+            ),
+        ),
+        (
             "greeting",
             re.compile(
                 r"(?:"
@@ -85,6 +121,21 @@ def _greedy_quantities(text: str) -> list[dict[str, Any]]:
                 "span": (m.start(), m.end()),
             }
         )
+    for m in _SPOKEN_QUANT_PATTERN.finditer(text):
+        word = m.group(1).lower()
+        amt = _WORD_TO_AMOUNT.get(word)
+        if amt is None:
+            continue
+        out.append(
+            {
+                "amount": amt,
+                "unit": None,
+                "raw": text[m.start() : m.end()],
+                "position": m.start(),
+                "span": (m.start(), m.end()),
+            }
+        )
+    out.sort(key=lambda x: x["position"])
     return out
 
 

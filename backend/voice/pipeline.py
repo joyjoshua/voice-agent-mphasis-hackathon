@@ -1,4 +1,11 @@
-"""Pipecat voice pipeline: Sarvam STT → Kirana NLU → Sarvam TTS over FastAPI WebSocket."""
+"""Pipecat voice pipeline: Sarvam STT → Kirana NLU → Sarvam TTS over FastAPI WebSocket.
+
+JSON frames to the frontend (same socket as binary audio):
+  { "type": "processing", "active": bool } — thinking / routing indicator
+  { "type": "transcript", "text": str }   — STT line (shown in transcript)
+  { "type": "response",  "text": str }   — assistant reply (voice + chat)
+  { "type": "error",      "text": str }  — error line for chat + TTS
+"""
 
 from __future__ import annotations
 
@@ -26,7 +33,6 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.serializers.base_serializer import FrameSerializer
 from pipecat.services.sarvam.stt import SarvamSTTService
 from pipecat.services.sarvam.tts import SarvamTTSService
-from pipecat.transcriptions.language import Language
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from starlette.websockets import WebSocketState
 
@@ -64,8 +70,32 @@ class KiranaPCMWebsocketSerializer(FrameSerializer):
         return None
 
 
-class KiranaFrameProcessor(FrameProcessor):
-    """Routes final transcripts to `route_and_respond`; bridges UI JSON over the WebSocket."""
+class TranscriptForwarder(FrameProcessor):
+    """After STT: notify UI (processing + transcript) before routing/TTS work (cf. cashflow-whisperer)."""
+
+    def __init__(self, *, websocket: WebSocket, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._websocket = websocket
+
+    async def _safe_send_json(self, payload: dict) -> None:
+        try:
+            if self._websocket.application_state == WebSocketState.DISCONNECTED:
+                return
+            await self._websocket.send_text(json.dumps(payload, ensure_ascii=False))
+        except Exception:
+            pass
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        await super().process_frame(frame, direction)
+        if direction == FrameDirection.DOWNSTREAM and isinstance(frame, TranscriptionFrame):
+            await self._safe_send_json({"type": "processing", "active": True})
+            raw = frame.text or ""
+            await self._safe_send_json({"type": "transcript", "text": raw.strip()})
+        await self.push_frame(frame, direction)
+
+
+class KiranaVoiceProcessor(FrameProcessor):
+    """Routes transcripts to `route_and_respond`; TTS + clears `processing` when done."""
 
     def __init__(
         self,
@@ -90,11 +120,19 @@ class KiranaFrameProcessor(FrameProcessor):
         except Exception:
             pass
 
-    async def _emit_fallback_reply(self) -> None:
+    async def _send_processing(self, active: bool) -> None:
+        await self._safe_send_json({"type": "processing", "active": active})
+
+    async def _emit_fallback_reply(self, *, processing_already_on: bool) -> None:
         """STT silence / empty transcript: TTS-only fallback, no LLM."""
+        if not processing_already_on:
+            await self._send_processing(True)
         await self._safe_send_json({"type": "transcript", "text": ""})
-        await self._safe_send_json({"type": "response", "text": _FALLBACK_NO_UTTERANCE})
+        await self._safe_send_json(
+            {"type": "response", "text": _FALLBACK_NO_UTTERANCE, "user_transcript": ""}
+        )
         await self.push_frame(TextFrame(_FALLBACK_NO_UTTERANCE))
+        await self._send_processing(False)
 
     async def _empty_transcript_guard(self, utterance_id: int) -> None:
         await asyncio.sleep(_EMPTY_TRANSCRIPT_GUARD_SEC)
@@ -102,7 +140,7 @@ class KiranaFrameProcessor(FrameProcessor):
             return
         if self._got_transcript_for_segment:
             return
-        await self._emit_fallback_reply()
+        await self._emit_fallback_reply(processing_already_on=False)
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
@@ -127,21 +165,24 @@ class KiranaFrameProcessor(FrameProcessor):
             text = (frame.text or "").strip()
             self._got_transcript_for_segment = True
             if not text:
-                await self._emit_fallback_reply()
+                await self._emit_fallback_reply(processing_already_on=True)
                 return
-
-            await self._safe_send_json({"type": "transcript", "text": text})
 
             try:
                 reply = await route_and_respond(text, self._session_id, self._product_names)
             except Exception:
                 err_text = "Something went wrong. Please try again."
-                await self._safe_send_json({"type": "error", "text": err_text})
+                await self._safe_send_json(
+                    {"type": "error", "text": err_text, "user_transcript": text}
+                )
                 await self.push_frame(TextFrame(err_text))
-                return
-
-            await self._safe_send_json({"type": "response", "text": reply})
-            await self.push_frame(TextFrame(reply))
+            else:
+                await self._safe_send_json(
+                    {"type": "response", "text": reply, "user_transcript": text}
+                )
+                await self.push_frame(TextFrame(reply))
+            finally:
+                await self._send_processing(False)
             return
 
         await self.push_frame(frame, direction)
@@ -152,7 +193,7 @@ def build_pipeline(
     product_names: list[str],
     session_id: str,
 ) -> PipelineTask:
-    """Assemble `SarvamSTTService` → `KiranaFrameProcessor` → `SarvamTTSService` (+ transport)."""
+    """Assemble STT → TranscriptForwarder → KiranaVoiceProcessor → TTS (+ transport)."""
     api_key = (os.getenv("SARVAM_API_KEY") or "").strip()
     if not api_key:
         raise RuntimeError("SARVAM_API_KEY is not set")
@@ -169,25 +210,31 @@ def build_pipeline(
         ),
     )
 
+    # Sarvam streaming SDK (sarvamai) validates AudioData.encoding as audio/wav only.
+    # Use input_audio_codec="wav" so raw mic PCM can be sent; pcm_s16le is rejected by the client.
     stt = SarvamSTTService(
         api_key=api_key,
         model="saaras:v3",
         sample_rate=_MIC_SAMPLE_RATE_HZ,
         audio_passthrough=False,
+        input_audio_codec="wav",
+        mode="codemix",
     )
 
-    kirana = KiranaFrameProcessor(
+    transcript_forwarder = TranscriptForwarder(websocket=websocket, name="TranscriptForwarder")
+    kirana_voice = KiranaVoiceProcessor(
         websocket=websocket,
         session_id=session_id,
         product_names=product_names,
-        name="KiranaFrameProcessor",
+        name="KiranaVoiceProcessor",
     )
 
     tts = SarvamTTSService(
         api_key=api_key,
+        model="bulbul:v3",
+        sample_rate=_TTS_OUT_SAMPLE_RATE_HZ,
         settings=SarvamTTSService.Settings(
-            model="bulbul:v3",
-            language=Language.EN_IN,
+            language="en-IN",
         ),
     )
 
@@ -195,7 +242,8 @@ def build_pipeline(
         [
             transport.input(),
             stt,
-            kirana,
+            transcript_forwarder,
+            kirana_voice,
             tts,
             transport.output(),
         ]
@@ -206,7 +254,7 @@ def build_pipeline(
         params=PipelineParams(
             audio_in_sample_rate=_MIC_SAMPLE_RATE_HZ,
             audio_out_sample_rate=_TTS_OUT_SAMPLE_RATE_HZ,
-            allow_interruptions=True,
+            allow_interruptions=False,
         ),
         cancel_on_idle_timeout=False,
         enable_rtvi=False,
