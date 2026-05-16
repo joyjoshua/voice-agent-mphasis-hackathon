@@ -1,7 +1,8 @@
-# Repo root secrets (templates stay tracked: .env.example)
-.env
-.env.*
-!.env.example
+# Secrets at any folder depth (explicit `**`): backend/.env, frontend/.env, etc.
+# Tracked exceptions: anywhere named `.env.example` (e.g. repo root).
+**/.env
+**/.env.*
+!**/.env.example
 
 # Generated app data (see specs/tech-stack.md)
 /data/kirana.db
